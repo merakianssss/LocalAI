@@ -1,0 +1,539 @@
+import { useState, useEffect, useCallback } from 'react'
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
+import ResourceMonitor from '../components/ResourceMonitor'
+import ConfirmDialog from '../components/ConfirmDialog'
+import Toggle from '../components/Toggle'
+import { useModels } from '../hooks/useModels'
+import { backendControlApi, modelsApi, backendsApi, systemApi, nodesApi } from '../utils/api'
+
+const TABS = [
+  { key: 'models', label: 'Models', icon: 'fa-brain' },
+  { key: 'backends', label: 'Backends', icon: 'fa-server' },
+]
+
+export default function Manage() {
+  const { addToast } = useOutletContext()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') || localStorage.getItem('manage-tab') || 'models'
+  const [activeTab, setActiveTab] = useState(TABS.some(t => t.key === initialTab) ? initialTab : 'models')
+  const { models, loading: modelsLoading, refetch: refetchModels } = useModels()
+  const [loadedModelIds, setLoadedModelIds] = useState(new Set())
+  const [backends, setBackends] = useState([])
+  const [backendsLoading, setBackendsLoading] = useState(true)
+  const [reloading, setReloading] = useState(false)
+  const [reinstallingBackends, setReinstallingBackends] = useState(new Set())
+  const [upgrades, setUpgrades] = useState({})
+  const [confirmDialog, setConfirmDialog] = useState(null)
+  const [distributedMode, setDistributedMode] = useState(false)
+  const [togglingModels, setTogglingModels] = useState(new Set())
+  const [pinningModels, setPinningModels] = useState(new Set())
+
+  const handleTabChange = (tab) => {
+    setActiveTab(tab)
+    localStorage.setItem('manage-tab', tab)
+    setSearchParams({ tab })
+  }
+
+  const fetchLoadedModels = useCallback(async () => {
+    try {
+      const info = await systemApi.info()
+      const loaded = Array.isArray(info?.loaded_models) ? info.loaded_models : []
+      setLoadedModelIds(new Set(loaded.map(m => m.id)))
+    } catch {
+      setLoadedModelIds(new Set())
+    }
+  }, [])
+
+  const fetchBackends = useCallback(async () => {
+    try {
+      setBackendsLoading(true)
+      const data = await backendsApi.listInstalled()
+      setBackends(Array.isArray(data) ? data : [])
+    } catch {
+      setBackends([])
+    } finally {
+      setBackendsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchLoadedModels()
+    fetchBackends()
+    // Detect distributed mode (nodes API returns 503 when not enabled)
+    nodesApi.list().then(() => setDistributedMode(true)).catch(() => {})
+  }, [fetchLoadedModels, fetchBackends])
+
+  // Fetch available backend upgrades
+  useEffect(() => {
+    if (activeTab === 'backends') {
+      backendsApi.checkUpgrades()
+        .then(data => setUpgrades(data || {}))
+        .catch(() => {})
+    }
+  }, [activeTab])
+
+  const handleStopModel = (modelName) => {
+    setConfirmDialog({
+      title: 'Stop Model',
+      message: `Stop model ${modelName}?`,
+      confirmLabel: 'Stop',
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await backendControlApi.shutdown({ model: modelName })
+          addToast(`Stopped ${modelName}`, 'success')
+          setTimeout(fetchLoadedModels, 500)
+        } catch (err) {
+          addToast(`Failed to stop: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
+  const handleDeleteModel = (modelName) => {
+    setConfirmDialog({
+      title: 'Delete Model',
+      message: `Delete model ${modelName}? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await modelsApi.deleteByName(modelName)
+          addToast(`Deleted ${modelName}`, 'success')
+          refetchModels()
+          fetchLoadedModels()
+        } catch (err) {
+          addToast(`Failed to delete: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
+  const handleToggleModel = async (modelId, currentlyDisabled) => {
+    const action = currentlyDisabled ? 'enable' : 'disable'
+    setTogglingModels(prev => new Set(prev).add(modelId))
+    try {
+      await modelsApi.toggleState(modelId, action)
+      addToast(`Model ${modelId} ${action}d`, 'success')
+      refetchModels()
+      if (!currentlyDisabled) {
+        // Model was just disabled, refresh loaded models since it may have been shut down
+        setTimeout(fetchLoadedModels, 500)
+      }
+    } catch (err) {
+      addToast(`Failed to ${action} model: ${err.message}`, 'error')
+    } finally {
+      setTogglingModels(prev => {
+        const next = new Set(prev)
+        next.delete(modelId)
+        return next
+      })
+    }
+  }
+
+  const handleTogglePinned = async (modelId, currentlyPinned) => {
+    const action = currentlyPinned ? 'unpin' : 'pin'
+    setPinningModels(prev => new Set(prev).add(modelId))
+    try {
+      await modelsApi.togglePinned(modelId, action)
+      addToast(`Model ${modelId} ${action}ned`, 'success')
+      refetchModels()
+    } catch (err) {
+      addToast(`Failed to ${action} model: ${err.message}`, 'error')
+    } finally {
+      setPinningModels(prev => {
+        const next = new Set(prev)
+        next.delete(modelId)
+        return next
+      })
+    }
+  }
+
+  const handleReload = async () => {
+    setReloading(true)
+    try {
+      await modelsApi.reload()
+      addToast('Models reloaded', 'success')
+      setTimeout(() => { refetchModels(); fetchLoadedModels(); setReloading(false) }, 1000)
+    } catch (err) {
+      addToast(`Reload failed: ${err.message}`, 'error')
+      setReloading(false)
+    }
+  }
+
+  const handleReinstallBackend = async (name) => {
+    try {
+      setReinstallingBackends(prev => new Set(prev).add(name))
+      await backendsApi.install(name)
+      addToast(`Reinstalling ${name}...`, 'info')
+    } catch (err) {
+      addToast(`Failed to reinstall: ${err.message}`, 'error')
+    } finally {
+      setReinstallingBackends(prev => {
+        const next = new Set(prev)
+        next.delete(name)
+        return next
+      })
+    }
+  }
+
+  const handleUpgradeBackend = async (name) => {
+    try {
+      setReinstallingBackends(prev => new Set(prev).add(name))
+      await backendsApi.upgrade(name)
+      addToast(`Upgrading ${name}...`, 'info')
+    } catch (err) {
+      addToast(`Failed to upgrade: ${err.message}`, 'error')
+    } finally {
+      setReinstallingBackends(prev => {
+        const next = new Set(prev)
+        next.delete(name)
+        return next
+      })
+    }
+  }
+
+  const handleDeleteBackend = (name) => {
+    setConfirmDialog({
+      title: 'Delete Backend',
+      message: `Delete backend ${name}?`,
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await backendsApi.deleteInstalled(name)
+          addToast(`Deleted backend ${name}`, 'success')
+          fetchBackends()
+        } catch (err) {
+          addToast(`Failed to delete backend: ${err.message}`, 'error')
+        }
+      },
+    })
+  }
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <h1 className="page-title">System</h1>
+        <p className="page-subtitle">Manage installed models and backends</p>
+      </div>
+
+      {/* Resource Monitor */}
+      <ResourceMonitor />
+
+      {/* Tabs */}
+      <div className="tabs" style={{ marginTop: 'var(--spacing-lg)', marginBottom: 'var(--spacing-md)' }}>
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            className={`tab ${activeTab === t.key ? 'tab-active' : ''}`}
+            onClick={() => handleTabChange(t.key)}
+          >
+            <i className={`fas ${t.icon}`} style={{ marginRight: 6 }} />
+            {t.label}
+            {t.key === 'models' && !modelsLoading && ` (${models.length})`}
+            {t.key === 'backends' && !backendsLoading && ` (${backends.length})`}
+          </button>
+        ))}
+      </div>
+
+      {/* Models Tab */}
+      {activeTab === 'models' && (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 'var(--spacing-md)' }}>
+          <button className="btn btn-secondary btn-sm" onClick={handleReload} disabled={reloading}>
+            <i className={`fas ${reloading ? 'fa-spinner fa-spin' : 'fa-rotate'}`} />
+            {reloading ? 'Updating...' : 'Update'}
+          </button>
+        </div>
+
+        {modelsLoading ? (
+          <div className="card" style={{ padding: 'var(--spacing-xl)', textAlign: 'center', color: 'var(--color-text-muted)' }}>
+            <i className="fas fa-circle-notch fa-spin" /> Loading models...
+          </div>
+        ) : models.length === 0 ? (
+          <div className="card" style={{ padding: 'var(--spacing-xl)', textAlign: 'center' }}>
+            <i className="fas fa-exclamation-triangle" style={{ fontSize: '2rem', color: 'var(--color-warning)', marginBottom: 'var(--spacing-md)' }} />
+            <h3 style={{ marginBottom: 'var(--spacing-sm)' }}>No models installed yet</h3>
+            <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem', marginBottom: 'var(--spacing-md)' }}>
+              Install a model from the gallery to get started.
+            </p>
+            <div style={{ display: 'flex', gap: 'var(--spacing-sm)', justifyContent: 'center' }}>
+              <button className="btn btn-primary btn-sm" onClick={() => navigate('/app/models')}>
+                <i className="fas fa-store" /> Browse Gallery
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => navigate('/app/import-model')}>
+                <i className="fas fa-upload" /> Import Model
+              </button>
+              <a className="btn btn-secondary btn-sm" href="https://localai.io" target="_blank" rel="noopener noreferrer">
+                <i className="fas fa-book" /> Documentation
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}>Enabled</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Backend</th>
+                  <th>Use Cases</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map(model => (
+                  <tr key={model.id} style={{ opacity: model.disabled ? 0.55 : 1, transition: 'opacity 0.2s' }}>
+                    {/* Enable/Disable toggle */}
+                    <td>
+                      <Toggle
+                        checked={!model.disabled}
+                        onChange={() => handleToggleModel(model.id, model.disabled)}
+                        disabled={togglingModels.has(model.id)}
+                      />
+                    </td>
+                    {/* Name */}
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                        <span style={{ fontWeight: 500 }}>{model.id}</span>
+                        {model.pinned && (
+                          <i className="fas fa-thumbtack" style={{ fontSize: '0.625rem', color: 'var(--color-warning)' }} title="Pinned — won't be idle-unloaded" />
+                        )}
+                        <div style={{ display: 'flex', gap: '2px', marginLeft: 'auto' }}>
+                          <a
+                            href="#"
+                            onClick={(e) => { e.preventDefault(); navigate(`/app/model-editor/${encodeURIComponent(model.id)}`) }}
+                            className="btn btn-secondary btn-sm"
+                            style={{ padding: '2px 5px', fontSize: '0.625rem' }}
+                            title="Edit config"
+                          >
+                            <i className="fas fa-pen-to-square" />
+                          </a>
+                          {!distributedMode && (
+                            <a
+                              href="#"
+                              onClick={(e) => { e.preventDefault(); navigate(`/app/backend-logs/${encodeURIComponent(model.id)}`) }}
+                              className="btn btn-secondary btn-sm"
+                              style={{ padding: '2px 5px', fontSize: '0.625rem' }}
+                              title="Backend logs"
+                            >
+                              <i className="fas fa-terminal" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    {/* Status */}
+                    <td>
+                      {model.disabled ? (
+                        <span className="badge" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-muted)' }}>
+                          <i className="fas fa-ban" style={{ fontSize: '6px' }} /> Disabled
+                        </span>
+                      ) : loadedModelIds.has(model.id) ? (
+                        <span className="badge badge-success">
+                          <i className="fas fa-circle" style={{ fontSize: '6px' }} /> Running
+                        </span>
+                      ) : (
+                        <span className="badge" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-muted)' }}>
+                          <i className="fas fa-circle" style={{ fontSize: '6px' }} /> Idle
+                        </span>
+                      )}
+                    </td>
+                    {/* Backend */}
+                    <td>
+                      <span className="badge badge-info">{model.backend || 'Auto'}</span>
+                    </td>
+                    {/* Use Cases */}
+                    <td>
+                      <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                        <a href="#" onClick={(e) => { e.preventDefault(); navigate(`/app/chat/${encodeURIComponent(model.id)}`) }} className="badge badge-info" style={{ textDecoration: 'none', cursor: 'pointer' }}>Chat</a>
+                      </div>
+                    </td>
+                    {/* Actions */}
+                    <td>
+                      <div style={{ display: 'flex', gap: 'var(--spacing-xs)', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        {loadedModelIds.has(model.id) && (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleStopModel(model.id)}
+                            title="Stop model"
+                          >
+                            <i className="fas fa-stop" />
+                          </button>
+                        )}
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleTogglePinned(model.id, model.pinned)}
+                          disabled={pinningModels.has(model.id) || model.disabled}
+                          title={model.pinned ? 'Unpin model (allow idle unloading)' : 'Pin model (prevent idle unloading)'}
+                          style={{
+                            color: model.pinned ? 'var(--color-warning)' : undefined,
+                          }}
+                        >
+                          <i className={`fas fa-thumbtack${pinningModels.has(model.id) ? ' fa-spin' : ''}`} />
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDeleteModel(model.id)}
+                          title="Delete model"
+                        >
+                          <i className="fas fa-trash" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      )}
+
+      {/* Backends Tab */}
+      {activeTab === 'backends' && (
+      <div>
+        {backendsLoading ? (
+          <div style={{ textAlign: 'center', padding: 'var(--spacing-md)', color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>
+            Loading backends...
+          </div>
+        ) : backends.length === 0 ? (
+          <div className="card" style={{ padding: 'var(--spacing-xl)', textAlign: 'center' }}>
+            <i className="fas fa-server" style={{ fontSize: '2rem', color: 'var(--color-text-muted)', marginBottom: 'var(--spacing-md)' }} />
+            <h3 style={{ marginBottom: 'var(--spacing-sm)' }}>No backends installed yet</h3>
+            <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem', marginBottom: 'var(--spacing-md)' }}>
+              Install backends from the gallery to extend functionality.
+            </p>
+            <div style={{ display: 'flex', gap: 'var(--spacing-sm)', justifyContent: 'center' }}>
+              <button className="btn btn-primary btn-sm" onClick={() => navigate('/app/backends')}>
+                <i className="fas fa-server" /> Browse Backend Gallery
+              </button>
+              <a className="btn btn-secondary btn-sm" href="https://localai.io/backends/" target="_blank" rel="noopener noreferrer">
+                <i className="fas fa-book" /> Documentation
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Metadata</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {backends.map((backend, i) => (
+                  <tr key={backend.Name || i}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                        <i className="fas fa-cog" style={{ color: 'var(--color-accent)', fontSize: '0.75rem' }} />
+                        <span style={{ fontWeight: 500 }}>{backend.Name}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                        {backend.IsSystem ? (
+                          <span className="badge badge-info" style={{ fontSize: '0.625rem' }}>
+                            <i className="fas fa-shield-alt" style={{ fontSize: '0.5rem', marginRight: 2 }} />System
+                          </span>
+                        ) : (
+                          <span className="badge badge-success" style={{ fontSize: '0.625rem' }}>
+                            <i className="fas fa-download" style={{ fontSize: '0.5rem', marginRight: 2 }} />User
+                          </span>
+                        )}
+                        {backend.IsMeta && (
+                          <span className="badge" style={{ background: 'var(--color-accent-light)', color: 'var(--color-accent)', fontSize: '0.625rem' }}>
+                            <i className="fas fa-layer-group" style={{ fontSize: '0.5rem', marginRight: 2 }} />Meta
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                        {backend.Metadata?.alias && (
+                          <span>
+                            <i className="fas fa-tag" style={{ fontSize: '0.5rem', marginRight: 4 }} />
+                            Alias: <span style={{ color: 'var(--color-text-primary)' }}>{backend.Metadata.alias}</span>
+                          </span>
+                        )}
+                        {backend.Metadata?.meta_backend_for && (
+                          <span>
+                            <i className="fas fa-link" style={{ fontSize: '0.5rem', marginRight: 4 }} />
+                            For: <span style={{ color: 'var(--color-accent)' }}>{backend.Metadata.meta_backend_for}</span>
+                          </span>
+                        )}
+                        {backend.Metadata?.version && (
+                          <span>
+                            <i className="fas fa-code-branch" style={{ fontSize: '0.5rem', marginRight: 4 }} />
+                            Version: <span style={{ color: 'var(--color-text-primary)' }}>v{backend.Metadata.version}</span>
+                            {upgrades[backend.Name] && (
+                              <span style={{ color: '#856404', marginLeft: 4 }}>
+                                → v{upgrades[backend.Name].available_version}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {backend.Metadata?.installed_at && (
+                          <span>
+                            <i className="fas fa-calendar" style={{ fontSize: '0.5rem', marginRight: 4 }} />
+                            {backend.Metadata.installed_at}
+                          </span>
+                        )}
+                        {!backend.Metadata?.alias && !backend.Metadata?.meta_backend_for && !backend.Metadata?.installed_at && '—'}
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 'var(--spacing-xs)', justifyContent: 'flex-end' }}>
+                        {!backend.IsSystem ? (
+                          <>
+                            <button
+                              className={`btn ${upgrades[backend.Name] ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                              onClick={() => upgrades[backend.Name] ? handleUpgradeBackend(backend.Name) : handleReinstallBackend(backend.Name)}
+                              disabled={reinstallingBackends.has(backend.Name)}
+                              title={upgrades[backend.Name] ? `Upgrade to v${upgrades[backend.Name]?.available_version || 'latest'}` : 'Reinstall'}
+                            >
+                              <i className={`fas ${reinstallingBackends.has(backend.Name) ? 'fa-spinner fa-spin' : upgrades[backend.Name] ? 'fa-arrow-up' : 'fa-rotate'}`} />
+                            </button>
+                            <button
+                              className="btn btn-danger btn-sm"
+                              onClick={() => handleDeleteBackend(backend.Name)}
+                              title="Delete"
+                            >
+                              <i className="fas fa-trash" />
+                            </button>
+                          </>
+                        ) : (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>—</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      )}
+
+      <ConfirmDialog
+        open={!!confirmDialog}
+        title={confirmDialog?.title}
+        message={confirmDialog?.message}
+        confirmLabel={confirmDialog?.confirmLabel}
+        danger={confirmDialog?.danger}
+        onConfirm={confirmDialog?.onConfirm}
+        onCancel={() => setConfirmDialog(null)}
+      />
+    </div>
+  )
+}
