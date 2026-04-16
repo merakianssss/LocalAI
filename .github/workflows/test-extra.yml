@@ -480,7 +480,7 @@ jobs:
         with:
           submodules: true
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.4'
       - name: Build llama-cpp backend image and run gRPC e2e tests
@@ -497,7 +497,7 @@ jobs:
         with:
           submodules: true
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.4'
       - name: Build llama-cpp backend image and run audio transcription gRPC e2e tests
@@ -514,7 +514,7 @@ jobs:
         with:
           submodules: true
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.4'
       - name: Build ik-llama-cpp backend image and run gRPC e2e tests
@@ -531,7 +531,7 @@ jobs:
         with:
           submodules: true
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.4'
       # Exercises the turboquant (llama.cpp fork) backend with KV-cache
@@ -579,7 +579,7 @@ jobs:
   #         sudo apt-get install -y --no-install-recommends \
   #             make build-essential curl unzip ca-certificates git tar
   #     - name: Setup Go
-  #       uses: actions/setup-go@v5
+  #       uses: actions/setup-go@v6
   #       with:
   #         go-version: '1.25.4'
   #     - name: Free disk space
@@ -603,7 +603,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl libopenblas-dev ffmpeg
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
       - name: Display Go version
         run: go version
       - name: Proto Dependencies
@@ -635,7 +635,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl libopenblas-dev ffmpeg
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
       - name: Display Go version
         run: go version
       - name: Proto Dependencies
@@ -667,7 +667,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl libopenblas-dev ffmpeg
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
       # You can test your matrix by printing the current Go version
       - name: Display Go version
         run: go version
