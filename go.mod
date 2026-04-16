@@ -51,7 +51,7 @@ require (
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
 	github.com/prometheus/client_golang v1.23.2
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/russross/blackfriday v1.6.0
+	github.com/russross/blackfriday v2.0.0+incompatible
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/shirou/gopsutil/v3 v3.24.5
@@ -100,6 +100,7 @@ require (
 	github.com/moby/moby/client v0.4.0 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
+	github.com/shurcooL/sanitized_anchor_name v1.0.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/sv-tools/openapi v0.2.1 // indirect
 	github.com/swaggo/swag/v2 v2.0.0-rc4 // indirect
